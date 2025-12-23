@@ -1,0 +1,59 @@
+name: Build App Container Image for Staging
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-app:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+      BASE64ENV: ${{ secrets.BASE64ENV }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get & Set Container Metadata
+        id: meta-packages
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: staging
+
+      - name: Build & Push Container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging
+          labels: ${{ steps.meta-packages.outputs.labels }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          build-args: |
+            APP_VERSION_HASH=${{ github.sha }}
+            ENV_TYPE=dev
+
+      - name: Upload Docker Build Logs
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: docker-build-logs
+          path: /tmp/buildx/buildkit/logs
