@@ -1,12 +1,75 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"base-go-app/internal/config"
 	"base-go-app/internal/database"
 	"base-go-app/internal/models"
 	"base-go-app/internal/queue"
-	"log"
 )
+
+// healthHandler returns an http.HandlerFunc for /healthcheck
+func healthHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		status := http.StatusOK
+		body := map[string]interface{}{"status": "ok"}
+
+		// Check database
+		if ok, err := database.Ping(ctx); !ok {
+			body["database"] = false
+			if err != nil {
+				body["database_error"] = err.Error()
+			}
+			status = http.StatusInternalServerError
+		} else {
+			body["database"] = true
+		}
+
+		// Check rabbit
+		rabbitOk := queue.RabbitConnected()
+		body["rabbitmq"] = rabbitOk
+		if !rabbitOk {
+			// prefer to mark degraded
+			if status == http.StatusOK {
+				status = http.StatusInternalServerError
+				body["status"] = "degraded"
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
+	}
+}
+
+func startHealthServer() {
+	port := os.Getenv("HEALTH_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	http.HandleFunc("/healthcheck", healthHandler())
+
+	addr := fmt.Sprintf(":%s", port)
+	go func() {
+		log.Printf("Health server listening on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			log.Fatalf("Health server failed: %v", err)
+		}
+	}()
+}
 
 func main() {
 	// Load Configuration
@@ -27,6 +90,32 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
-	// Start Queue Consumer
-	queue.StartConsumer(cfg)
+	// Start Health Server
+	startHealthServer()
+
+	// Create a context that is canceled on SIGINT or SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Start Queue Consumer (non-blocking, manages reconnects) and get the done channel
+	done := queue.StartConsumer(ctx, cfg)
+
+	// Wait for termination signal
+	<-ctx.Done()
+	log.Println("Shutting down...")
+
+	// Attempt graceful shutdown: wait for consumer to stop with timeout
+	select {
+	case <-done:
+		log.Println("Consumer stopped")
+	case <-time.After(10 * time.Second):
+		log.Println("Timeout waiting for consumer shutdown")
+	}
+
+	// Close DB connection
+	if err := database.Close(); err != nil {
+		log.Printf("Error closing database: %v", err)
+	}
+
+	log.Println("Shutdown complete")
 }

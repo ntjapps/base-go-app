@@ -3,7 +3,9 @@ package tasks
 import (
 	"base-go-app/internal/database"
 	"base-go-app/internal/models"
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -11,6 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// LoggerTaskHandler implements TaskHandler for logging tasks.
+type LoggerTaskHandler struct{}
+
+// LoggerTaskPayload defines the expected structure of the logger task arguments.
 type LoggerTaskPayload struct {
 	Message   string                 `json:"message"`
 	Channel   string                 `json:"channel"`
@@ -21,75 +27,69 @@ type LoggerTaskPayload struct {
 	Extra     map[string]interface{} `json:"extra"`
 }
 
-func HandleLoggerTask(body []byte) error {
-	// Try to parse as Celery format first: [args, kwargs, embed]
-	var celeryMessage []interface{}
-	if err := json.Unmarshal(body, &celeryMessage); err == nil && len(celeryMessage) >= 1 {
-		// args is the first element
-		if args, ok := celeryMessage[0].([]interface{}); ok && len(args) > 0 {
-			// The first arg is our payload
-			payloadBytes, _ := json.Marshal(args[0])
-			return processPayload(payloadBytes)
-		}
+// Handle processes the logger task.
+func (h *LoggerTaskHandler) Handle(ctx context.Context, args json.RawMessage) error {
+	var payload LoggerTaskPayload
+	if err := json.Unmarshal(args, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal logger payload: %w", err)
 	}
 
-	// If not Celery format, try to parse directly
-	return processPayload(body)
+	return processLoggerPayload(payload)
 }
 
-func processPayload(data []byte) error {
-	var payload LoggerTaskPayload
-	
-	// Try to unmarshal directly
-	if err := json.Unmarshal(data, &payload); err != nil {
-		// Maybe it's a JSON string?
-		var strPayload string
-		if err2 := json.Unmarshal(data, &strPayload); err2 == nil {
-			if err3 := json.Unmarshal([]byte(strPayload), &payload); err3 != nil {
-				log.Printf("Error parsing payload string: %v", err3)
-				return err3
+func processLoggerPayload(payload LoggerTaskPayload) error {
+	// Convert Level to int
+	levelInt, err := strconv.Atoi(payload.Level)
+	if err != nil {
+		// Default to 0 or handle error
+		levelInt = 0
+		log.Printf("Warning: invalid level %s, defaulting to 0", payload.Level)
+	}
+
+	// Parse Datetime
+	// We'll try standard formats.
+	logDate, err := time.Parse("2006-01-02 15:04:05.000000", payload.Datetime)
+	if err != nil {
+		// Try without microseconds
+		logDate, err = time.Parse("2006-01-02 15:04:05", payload.Datetime)
+		if err != nil {
+			// Try with 3 digits ms
+			logDate, err = time.Parse("2006-01-02 15:04:05.000", payload.Datetime)
+			if err != nil {
+				logDate = time.Now()
+				log.Printf("Warning: invalid datetime %s, defaulting to now", payload.Datetime)
 			}
-		} else {
-			log.Printf("Error parsing payload: %v", err)
-			return err
 		}
 	}
 
 	id, err := uuid.NewV7()
 	if err != nil {
-		// Fallback to V4 if V7 fails (unlikely)
 		id = uuid.New()
 	}
 
-	levelInt, _ := strconv.Atoi(payload.Level)
-
-	// Parse datetime
-	// Python format: "%Y-%m-%d %H:%M:%S.%f" (but helper does .%03d)
-	// Go layout: "2006-01-02 15:04:05.000"
-	parsedTime, err := time.Parse("2006-01-02 15:04:05.000", payload.Datetime)
-	if err != nil {
-		log.Printf("Error parsing time: %v, using Now()", err)
-		parsedTime = time.Now()
-	}
-
-	logEntry := models.ServerLog{
+	serverLog := models.ServerLog{
 		ID:        id,
 		Message:   payload.Message,
 		Channel:   payload.Channel,
 		Level:     levelInt,
 		LevelName: payload.LevelName,
-		Datetime:  parsedTime,
+		Datetime:  logDate,
 		Context:   payload.Context,
 		Extra:     payload.Extra,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 
-	result := database.DB.Create(&logEntry)
-	if result.Error != nil {
-		log.Printf("Error inserting log: %v", result.Error)
-	} else {
-		log.Printf("Log inserted: %s", id)
+	if err := database.DB.Create(&serverLog).Error; err != nil {
+		log.Printf("Failed to save log to DB: %v", err)
+		return err
 	}
-	return result.Error
+
+	log.Printf("Successfully saved log: %s", serverLog.ID)
+	return nil
+}
+
+// Register the handler
+func init() {
+	RegisterTask("logger", &LoggerTaskHandler{})
 }
