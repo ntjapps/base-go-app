@@ -15,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o /worker ./cmd/worker
 
 # Final image
-FROM alpine:3.18
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates curl
 ENV HEALTH_PORT=8080
 EXPOSE 8080
