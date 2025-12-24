@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -66,6 +67,12 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 	taskCh := make(chan amqp.Delivery, bufferSize)
 	var wg sync.WaitGroup
 
+	// Shared channel for publishing retries
+	var (
+		chMu      sync.RWMutex
+		currentCh *amqp.Channel
+	)
+
 	// Start workers
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
@@ -84,15 +91,42 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 					if res.Success {
 						d.Ack(false)
 					} else if res.Retry {
-						// Re-publish for retry (simple approach: nack with requeue=false and publish to retry queue,
-						// or just nack requeue=false if DLX is set up to handle retries.
-						// For this implementation, we'll assume DLX is configured or we just Nack(false) to drop/DLQ.
-						// Ideally we'd republish with updated attempt count.
-						// Since we don't have the publisher here easily, we'll just Nack(false) which sends to DLX if configured.
-						// To support attempt counting properly without a publisher, we rely on the app to have set up DLX loops
-						// or we need to inject a publisher.
-						// For simplicity in this step: Nack(false) -> DLQ.
-						// Real retry with attempt++ requires republishing.
+						// Attempt to republish with incremented attempt count
+						var payload tasks.TaskPayload
+						if err := json.Unmarshal(d.Body, &payload); err == nil {
+							payload.Attempt = res.RetryAttempt
+							newBody, _ := json.Marshal(payload)
+
+							// Calculate backoff (exponential: 2^(attempt-1) seconds)
+							// e.g., attempt 1 (retry 1) -> 1s, retry 2 -> 2s, retry 3 -> 4s
+							backoffMs := int64(1000 * (1 << (payload.Attempt - 1)))
+
+							chMu.RLock()
+							pubCh := currentCh
+							chMu.RUnlock()
+
+							if pubCh != nil {
+								err := pubCh.Publish(
+									d.Exchange,
+									d.RoutingKey,
+									false, // mandatory
+									false, // immediate
+									amqp.Publishing{
+										ContentType: "application/json",
+										Body:        newBody,
+										Headers: amqp.Table{
+											"x-delay": backoffMs, // For rabbitmq_delayed_message_exchange
+										},
+									},
+								)
+								if err == nil {
+									d.Ack(false)
+									continue
+								}
+								log.Printf("Failed to republish retry: %v", err)
+							}
+						}
+						// Fallback: Nack without requeue (DLQ)
 						d.Nack(false, false)
 					} else {
 						// Fatal error
@@ -148,6 +182,11 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 				atomic.StoreInt32(&rabbitConnected, 0)
 				continue
 			}
+
+			// Update shared channel
+			chMu.Lock()
+			currentCh = ch
+			chMu.Unlock()
 
 			// Set QoS
 			if err := ch.Qos(concurrency*2, 0, false); err != nil {
@@ -234,6 +273,9 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 				select {
 				case <-ctx.Done():
 					log.Println("Context canceled while consuming, closing consumer")
+					chMu.Lock()
+					currentCh = nil
+					chMu.Unlock()
 					ch.Close()
 					_ = conn.Close()
 					atomic.StoreInt32(&rabbitConnected, 0)
@@ -254,6 +296,9 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 			}
 			// msgs channel closed or connection lost
 			log.Println("RabbitMQ consumer disconnected, will attempt reconnect")
+			chMu.Lock()
+			currentCh = nil
+			chMu.Unlock()
 			ch.Close()
 			_ = conn.Close()
 			atomic.StoreInt32(&rabbitConnected, 0)
