@@ -1,14 +1,14 @@
 # Base Go App - Worker
 
 This is a Go implementation of the worker system, replacing the Python Celery worker.
-It is optimized for RabbitMQ and currently handles the `log_db_task`.
+It is optimized for RabbitMQ and currently handles the `logger` task (stores logs in the database).
 
 ## Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - RabbitMQ
 - PostgreSQL
-- `.env` file (see `base-go-app/.env.example` or copy from there)
+- `.env` file (create one with the environment variables below or set them in the environment; the app will also load a `.env` file if present) 
 
 ## Structure
 
@@ -50,9 +50,9 @@ It expects messages to be either:
 
 ## Tasks
 
-### `log_db_task`
+### `logger` task
 
-Inserts a log record into the `log` table.
+Inserts a log record into the `log` table (handler registered as `logger`).
 Payload structure:
 ```json
 {
@@ -72,7 +72,7 @@ Payload structure:
 
 - RabbitMQ-only worker optimized to receive Celery-compatible payloads.
 - PostgreSQL persistence using GORM.
-- Healthcheck HTTP endpoint (`/healthz`) for container orchestration.
+- Healthcheck HTTP endpoint (`/healthcheck`) for container orchestration.
 - Docker multi-stage build producing a minimal runtime image.
 - GitHub Actions for build/test and container publishing.
 - Dependabot config to keep Go modules, GitHub Actions and Docker up-to-date.
@@ -98,7 +98,7 @@ If either the DB ping or RabbitMQ connection check fails, `/healthcheck` will re
 A multi-stage `Dockerfile` builds a statically-linked Go binary and produces a small Alpine-based image.
 
 - Exposes port `8080` (configurable via `HEALTH_PORT` env var).
-- Includes a Docker `HEALTHCHECK` that calls `GET /healthz`.
+- Includes a Docker `HEALTHCHECK` that calls `GET /healthcheck`.
 
 Build and run locally:
 
@@ -110,7 +110,7 @@ docker build -t myorg/base-go-app:staging .
 docker run -e RABBITMQ_HOST=... -e DB_HOST=... -p 8080:8080 myorg/base-go-app:staging
 
 # Check health
-curl http://localhost:8080/healthz
+curl http://localhost:8080/healthcheck
 ```
 
 ## CI / CD ⚙️
