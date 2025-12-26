@@ -27,14 +27,15 @@ func TestLoggerTaskHandler_Handle(t *testing.T) {
 
 	handler := &LoggerTaskHandler{}
 	
-	payload := LoggerTaskPayload{
-		Message:   "Test Message",
-		Channel:   "test",
-		Level:     "200",
-		LevelName: "INFO",
-		Datetime:  "2023-01-01 12:00:00",
-		Context:   map[string]interface{}{"key": "value"},
-		Extra:     map[string]interface{}{"foo": "bar"},
+	// Use a map for payload to simulate flexible types (like string level)
+	payload := map[string]interface{}{
+		"message":    "Test Message",
+		"channel":    "test",
+		"level":      "200",
+		"level_name": "INFO",
+		"datetime":   "2023-01-01 12:00:00",
+		"context":    map[string]interface{}{"key": "value"},
+		"extra":      map[string]interface{}{"foo": "bar"},
 	}
 	
 	payloadBytes, err := json.Marshal(payload)
@@ -51,6 +52,34 @@ func TestLoggerTaskHandler_Handle(t *testing.T) {
 	assert.Equal(t, "INFO", logEntry.LevelName)
 }
 
+func TestLoggerTaskHandler_Handle_EmptyArrayContext(t *testing.T) {
+	setupTestDB(t)
+	handler := &LoggerTaskHandler{}
+	
+	// Simulate PHP sending empty array [] for context/extra instead of object {}
+	payload := map[string]interface{}{
+		"message":    "Empty Context",
+		"channel":    "test",
+		"level":      200,
+		"level_name": "INFO",
+		"datetime":   "2023-01-01 12:00:00",
+		"context":    []interface{}{}, // Empty array
+		"extra":      []interface{}{}, // Empty array
+	}
+	
+	payloadBytes, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	err = handler.Handle(context.Background(), json.RawMessage(payloadBytes))
+	assert.NoError(t, err)
+
+	var logEntry models.ServerLog
+	err = database.DB.Where("message = ?", "Empty Context").First(&logEntry).Error
+	assert.NoError(t, err)
+	assert.Empty(t, logEntry.Context)
+	assert.Empty(t, logEntry.Extra)
+}
+
 func TestLoggerTaskHandler_Handle_InvalidJSON(t *testing.T) {
 	setupTestDB(t)
 	handler := &LoggerTaskHandler{}
@@ -63,12 +92,12 @@ func TestLoggerTaskHandler_Handle_DBNotConnected(t *testing.T) {
 	// Ensure DB is not connected; handler should not panic and should return nil
 	database.ClearDBForTests()
 	handler := &LoggerTaskHandler{}
-	payload := LoggerTaskPayload{
-		Message:   "No DB",
-		Channel:   "test",
-		Level:     "100",
-		LevelName: "DEBUG",
-		Datetime:  "2023-01-01 12:00:00",
+	payload := map[string]interface{}{
+		"message":    "No DB",
+		"channel":    "test",
+		"level":      100,
+		"level_name": "DEBUG",
+		"datetime":   "2023-01-01 12:00:00",
 	}
 	payloadBytes, err := json.Marshal(payload)
 	require.NoError(t, err)

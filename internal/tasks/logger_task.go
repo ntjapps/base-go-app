@@ -23,8 +23,8 @@ type LoggerTaskPayload struct {
 	Level     interface{}            `json:"level"` // Can be int or string
 	LevelName string                 `json:"level_name"`
 	Datetime  string                 `json:"datetime"`
-	Context   map[string]interface{} `json:"context"`
-	Extra     map[string]interface{} `json:"extra"`
+	Context   interface{}            `json:"context"` // Can be map or array (empty array in PHP = [])
+	Extra     interface{}            `json:"extra"`   // Can be map or array (empty array in PHP = [])
 }
 
 // Handle processes the logger task.
@@ -58,6 +58,10 @@ func processLoggerPayload(payload LoggerTaskPayload) error {
 		log.Printf("Warning: invalid level type %T, defaulting to 0", v)
 	}
 
+	// Normalize Context and Extra to map[string]interface{}
+	contextMap := normalizeToMap(payload.Context)
+	extraMap := normalizeToMap(payload.Extra)
+
 	// Parse Datetime
 	// We'll try standard formats.
 	logDate, err := time.Parse("2006-01-02 15:04:05.000000", payload.Datetime)
@@ -85,9 +89,9 @@ func processLoggerPayload(payload LoggerTaskPayload) error {
 		Channel:   payload.Channel,
 		Level:     levelInt,
 		LevelName: payload.LevelName,
-		Datetime:  logDate,
-		Context:   payload.Context,
-		Extra:     payload.Extra,
+		Datetime:  logDate.Format("2006-01-02 15:04:05.000000"),
+		Context:   contextMap,
+		Extra:     extraMap,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -106,6 +110,23 @@ func processLoggerPayload(payload LoggerTaskPayload) error {
 
 	log.Printf("Successfully saved log: %s", serverLog.ID)
 	return nil
+}
+
+// normalizeToMap converts interface{} to map[string]interface{}.
+// Handles empty arrays (which PHP sends for empty maps) by returning an empty map.
+func normalizeToMap(v interface{}) map[string]interface{} {
+	if v == nil {
+		return make(map[string]interface{})
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	// If it's an array (likely empty from PHP), return empty map
+	if _, ok := v.([]interface{}); ok {
+		return make(map[string]interface{})
+	}
+	// Fallback: try to marshal/unmarshal if it's some other structure, or return empty
+	return make(map[string]interface{})
 }
 
 // Register the handler
