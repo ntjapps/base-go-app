@@ -20,7 +20,7 @@ type LoggerTaskHandler struct{}
 type LoggerTaskPayload struct {
 	Message   string                 `json:"message"`
 	Channel   string                 `json:"channel"`
-	Level     string                 `json:"level"`
+	Level     interface{}            `json:"level"` // Can be int or string
 	LevelName string                 `json:"level_name"`
 	Datetime  string                 `json:"datetime"`
 	Context   map[string]interface{} `json:"context"`
@@ -39,11 +39,23 @@ func (h *LoggerTaskHandler) Handle(ctx context.Context, args json.RawMessage) er
 
 func processLoggerPayload(payload LoggerTaskPayload) error {
 	// Convert Level to int
-	levelInt, err := strconv.Atoi(payload.Level)
-	if err != nil {
-		// Default to 0 or handle error
+	var levelInt int
+	var err error
+
+	switch v := payload.Level.(type) {
+	case float64:
+		levelInt = int(v)
+	case int:
+		levelInt = v
+	case string:
+		levelInt, err = strconv.Atoi(v)
+		if err != nil {
+			levelInt = 0
+			log.Printf("Warning: invalid level string %s, defaulting to 0", v)
+		}
+	default:
 		levelInt = 0
-		log.Printf("Warning: invalid level %s, defaulting to 0", payload.Level)
+		log.Printf("Warning: invalid level type %T, defaulting to 0", v)
 	}
 
 	// Parse Datetime
