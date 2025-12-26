@@ -13,7 +13,6 @@ import (
 
 	"base-go-app/internal/config"
 	"base-go-app/internal/database"
-	"base-go-app/internal/models"
 	"base-go-app/internal/queue"
 )
 
@@ -93,31 +92,10 @@ func main() {
 	// Start Queue Consumer (prioritized) and get the done channel
 	done := queue.StartConsumer(ctx, cfg)
 
-	// Connect to Database in background and run AutoMigrate once DB becomes available.
-	// The DB is optional for startup; this goroutine will perform a single
-	// migration when a connection is established and will exit on ctx cancellation.
-	go func() {
-		if err := database.Connect(cfg); err != nil {
-			log.Printf("Failed to start database connection: %v", err)
-			// Connect starts its own reconnect loop; continue and wait for connection
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			if database.Connected() && database.DB != nil {
-				if err := database.DB.AutoMigrate(&models.ServerLog{}); err != nil {
-					log.Printf("Failed to migrate database: %v", err)
-				} else {
-					log.Println("AutoMigrate completed")
-				}
-				return
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
+	// Connect to Database (manages its own background reconnects)
+	if err := database.Connect(cfg); err != nil {
+		log.Printf("Failed to start database connection: %v", err)
+	}
 	// Wait for termination signal
 	<-ctx.Done()
 	log.Println("Shutting down...")
