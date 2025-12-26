@@ -17,7 +17,7 @@ func setupTestDB(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	
-	database.DB = db
+	database.SetDBForTests(db)
 	err = database.DB.AutoMigrate(&models.ServerLog{})
 	require.NoError(t, err)
 }
@@ -57,4 +57,22 @@ func TestLoggerTaskHandler_Handle_InvalidJSON(t *testing.T) {
 	
 	err := handler.Handle(context.Background(), json.RawMessage(`{invalid`))
 	assert.Error(t, err)
+}
+
+func TestLoggerTaskHandler_Handle_DBNotConnected(t *testing.T) {
+	// Ensure DB is not connected; handler should not panic and should return nil
+	database.ClearDBForTests()
+	handler := &LoggerTaskHandler{}
+	payload := LoggerTaskPayload{
+		Message:   "No DB",
+		Channel:   "test",
+		Level:     "100",
+		LevelName: "DEBUG",
+		Datetime:  "2023-01-01 12:00:00",
+	}
+	payloadBytes, err := json.Marshal(payload)
+	require.NoError(t, err)
+	
+	err = handler.Handle(context.Background(), json.RawMessage(payloadBytes))
+	assert.NoError(t, err)
 }

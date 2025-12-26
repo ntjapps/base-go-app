@@ -32,7 +32,9 @@ func healthHandler() http.HandlerFunc {
 			if err != nil {
 				body["database_error"] = err.Error()
 			}
-			status = http.StatusInternalServerError
+			// DB is optional, so we don't fail the healthcheck
+			// status = http.StatusInternalServerError
+			body["status"] = "degraded"
 		} else {
 			body["database"] = true
 		}
@@ -43,7 +45,10 @@ func healthHandler() http.HandlerFunc {
 		if !rabbitOk {
 			// prefer to mark degraded
 			if status == http.StatusOK {
-				status = http.StatusInternalServerError
+				// RabbitMQ is critical? If so, keep 500. If optional, use 200.
+				// User asked for resilience when RabbitMQ is not up too.
+				// Let's keep it 200 but degraded for now to prevent restart loops.
+				// status = http.StatusInternalServerError
 				body["status"] = "degraded"
 			}
 		}
@@ -78,28 +83,41 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Connect to Database
-	err = database.Connect(cfg)
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-
-	// AutoMigrate the schema
-	err = database.DB.AutoMigrate(&models.ServerLog{})
-	if err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
-	}
-
-	// Start Health Server
-	startHealthServer()
-
 	// Create a context that is canceled on SIGINT or SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start Queue Consumer (non-blocking, manages reconnects) and get the done channel
+	// Start Health Server early so readiness is visible
+	startHealthServer()
+
+	// Start Queue Consumer (prioritized) and get the done channel
 	done := queue.StartConsumer(ctx, cfg)
 
+	// Connect to Database in background and run AutoMigrate once DB becomes available.
+	// The DB is optional for startup; this goroutine will perform a single
+	// migration when a connection is established and will exit on ctx cancellation.
+	go func() {
+		if err := database.Connect(cfg); err != nil {
+			log.Printf("Failed to start database connection: %v", err)
+			// Connect starts its own reconnect loop; continue and wait for connection
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			if database.Connected() && database.DB != nil {
+				if err := database.DB.AutoMigrate(&models.ServerLog{}); err != nil {
+					log.Printf("Failed to migrate database: %v", err)
+				} else {
+					log.Println("AutoMigrate completed")
+				}
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
 	// Wait for termination signal
 	<-ctx.Done()
 	log.Println("Shutting down...")

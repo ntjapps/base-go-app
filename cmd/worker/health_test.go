@@ -26,8 +26,9 @@ func TestHealthHandlerDown(t *testing.T) {
 	h := healthHandler()
 	h.ServeHTTP(w, req)
 	resp := w.Result()
-	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("expected non-200 when db and rabbit down")
+	// We now expect 200 even if down, but with status=degraded in body
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (degraded) when db and rabbit down, got %d", resp.StatusCode)
 	}
 }
 

@@ -56,11 +56,18 @@ func (c *Config) GetRabbitMQURL() string {
 }
 
 func (c *Config) GetDSN() string {
+	port := c.DBPort
+	if port == "" {
+		// Default to the common Postgres port if none was provided to avoid
+		// accidental token merging (e.g. "port= sslmode=disable" being
+		// parsed incorrectly as the port value).
+		port = "5432"
+	}
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
 		c.DBHost,
 		c.DBUser,
 		c.DBPassword,
 		c.DBDatabase,
-		c.DBPort,
+		port,
 	)
 }

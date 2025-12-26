@@ -62,3 +62,16 @@ func TestGetDSN(t *testing.T) {
 	expected := "host=dbhost user=dbuser password=dbpass dbname=dbname port=5432 sslmode=disable TimeZone=UTC"
 	assert.Equal(t, expected, cfg.GetDSN())
 }
+
+func TestGetDSNDefaultPort(t *testing.T) {
+	cfg := &Config{
+		DBUser:     "dbuser",
+		DBPassword: "dbpass",
+		DBHost:     "dbhost",
+		DBPort:     "",
+		DBDatabase: "dbname",
+	}
+
+	expected := "host=dbhost user=dbuser password=dbpass dbname=dbname port=5432 sslmode=disable TimeZone=UTC"
+	assert.Equal(t, expected, cfg.GetDSN())
+}

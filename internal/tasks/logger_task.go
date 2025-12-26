@@ -80,6 +80,13 @@ func processLoggerPayload(payload LoggerTaskPayload) error {
 		UpdatedAt: time.Now(),
 	}
 
+	// If DB is not connected, skip persisting logs to avoid panics and
+	// allow the worker to continue processing other tasks.
+	if !database.Connected() || database.DB == nil {
+		log.Printf("Database not connected; skipping saving log: %s", serverLog.ID)
+		return nil
+	}
+
 	if err := database.DB.Create(&serverLog).Error; err != nil {
 		log.Printf("Failed to save log to DB: %v", err)
 		return err

@@ -269,6 +269,7 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 			delay = 2 * time.Second
 
 			// Process messages; when msgs channel closes we attempt to reconnect
+			notifyClose := conn.NotifyClose(make(chan *amqp.Error))
 			for {
 				select {
 				case <-ctx.Done():
@@ -280,11 +281,14 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 					_ = conn.Close()
 					atomic.StoreInt32(&rabbitConnected, 0)
 					return
+				case err := <-notifyClose:
+					log.Printf("RabbitMQ connection closed: %v", err)
+					goto Reconnect
 				case d, ok := <-msgs:
 					if !ok {
 						// Channel closed
 						log.Println("msgs channel closed")
-						break
+						goto Reconnect
 					}
 					// Push to worker pool
 					select {
@@ -294,6 +298,7 @@ func StartConsumer(ctx context.Context, cfg *config.Config) <-chan struct{} {
 					}
 				}
 			}
+		Reconnect:
 			// msgs channel closed or connection lost
 			log.Println("RabbitMQ consumer disconnected, will attempt reconnect")
 			chMu.Lock()
